@@ -6,13 +6,17 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color 
 
+# Get the script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
 # Function to build and verify
 build_service() {
     local service_name=$1
     local compose_file=$2
     echo -e "${YELLOW}🚀 Building $service_name...${NC}"
     
-    if docker compose -f "$compose_file" build --no-cache --no-parallel; then
+    if docker compose -f "$SCRIPT_DIR/$compose_file" build --no-cache; then
         echo -e "${GREEN}✅ $service_name built successfully${NC}"
         return 0
     else
@@ -23,7 +27,7 @@ build_service() {
 
 echo -e "${GREEN}=====================================================${NC}"
 echo -e "${GREEN}Building Real-Time Log Processing Pipeline Containers${NC}"
-echo -e "${GREEN}===================================================${NC}\n"
+echo -e "${GREEN}=====================================================${NC}\n"
 
 # Build services sequentially
 build_service "Kafka cluster" "kafka-compose.yml" || exit 1
@@ -31,10 +35,10 @@ build_service "Elasticsearch and Kibana" "elasticsearch-compose.yml" || exit 1
 
 echo -e "${YELLOW}🚀 Setting up Airflow...${NC}"
 
-# Check if .env file exists
-if [ ! -f .env ]; then
+# Check if .env file exists in project root
+if [ ! -f "$PROJECT_ROOT/.env" ]; then
     echo -e "${YELLOW}⚠️  .env file not found. Creating default .env file...${NC}"
-    cat > .env << EOF
+    cat > "$PROJECT_ROOT/.env" << EOF
 # Airflow Configuration
 AIRFLOW_UID=$(id -u)
 AIRFLOW_PROJ_DIR=.

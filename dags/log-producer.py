@@ -1,10 +1,7 @@
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 from datetime import datetime, timedelta, timezone
-
-from KafkaModule.Producer import Producer
-from FakerModule.GenerateFake import GenerateFakeWebsiteLog
-from Helpers.utils import LogParser
+import logging
 
 default_args = {
     'owner': 'shivp436',
@@ -16,60 +13,80 @@ default_args = {
 def produce_web_logs():
     """
     Generate and send fake web logs to Kafka
-    Each log is sent with a unique key for at-most-once delivery
     """
+    # HEAVY IMPORTS INSIDE THE FUNCTION
+    from KafkaModule.Producer import Producer
+    from FakerModule.GenerateFake import GenerateFakeWebsiteLog
+    from Helpers.utils import LogParser
+    
+    logger = logging.getLogger(__name__)
+    
     fake_logger = GenerateFakeWebsiteLog()
     parser = LogParser()
     topic = "web-logs-topic"
     
-    with Producer(topic) as producer:
-        try:
-            num_logs = 1000  # Reduced for more frequent, smaller batches
-            success_count = 0
+    producer = None
+    
+    try:
+        producer = Producer(topic)
+        num_logs = 1000
+        success_count = 0
+        failed_count = 0
+        
+        logger.info(f"🚀 Starting to produce {num_logs} logs to topic '{topic}'")
+        
+        for i in range(num_logs):
+            log_entry = fake_logger.get_log()
+            parsed_log = parser.parse_log(log_entry)
             
-            for i in range(num_logs):
-                # Generate raw log entry
-                log_entry = fake_logger.get_log()
+            if parsed_log:
+                future = producer.send(value=parsed_log)
                 
-                # Parse the log to get structured data
-                parsed_log = parser.parse_log(log_entry)
-                
-                if parsed_log:
-                    # Send parsed log (producer will auto-generate key)
-                    # The key will be used for partitioning and as unique ID in Elasticsearch
-                    future = producer.send(value=parsed_log)
-                    
-                    # Wait for confirmation (optional, for reliability)
-                    try:
-                        record_metadata = future.get(timeout=10)
-                        success_count += 1
-                        print(
-                            f"✅ Log {i+1}/{num_logs}: "
-                            f"partition={record_metadata.partition}, "
-                            f"offset={record_metadata.offset}"
+                try:
+                    record_metadata = future.get(timeout=10)
+                    success_count += 1
+                    if (i + 1) % 200 == 0:  # Log every 200 messages
+                        logger.info(
+                            f"📤 Progress: {i+1}/{num_logs} logs sent "
+                            f"(partition={record_metadata.partition}, offset={record_metadata.offset})"
                         )
-                    except Exception as e:
-                        print(f"❌ Failed to send log {i+1}: {e}")
-                else:
-                    print(f"⚠️  Failed to parse log {i+1}")
-            
-            # Flush remaining messages
-            producer.flush()
-            print(f"🎉 Successfully sent {success_count}/{num_logs} logs!")
-            
-        except Exception as e:
-            print(f"❌ Error in produce_web_logs: {e}")
-            raise
+                except Exception as e:
+                    failed_count += 1
+                    logger.error(f"❌ Failed to send log {i+1}: {e}")
+            else:
+                failed_count += 1
+                logger.warning(f"⚠️  Failed to parse log {i+1}")
+        
+        producer.flush()
+        
+        logger.info(f"📊 Summary: Successfully sent {success_count}/{num_logs} logs")
+        if failed_count > 0:
+            logger.warning(f"⚠️  Failed: {failed_count} logs")
+        
+        if success_count == num_logs:
+            logger.info(f"🎉 All logs sent successfully!")
+        
+    except Exception as e:
+        logger.error(f"❌ Error in produce_web_logs: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+    finally:
+        if producer:
+            producer.close()
+            logger.info("✅ Producer closed")
 
 with DAG(
     dag_id="log-producer",
-    schedule="* * * * *",  # Every 2 minutes for more manageable batches
+    schedule="* * * * *",
     catchup=False,
     tags=["logs", "kafka", "production"],
-    default_args=default_args
+    default_args=default_args,
+    max_active_runs=1
 ) as dag:
     
     produce_web_logs_task = PythonOperator(
         task_id='produce_web_logs_task',
-        python_callable=produce_web_logs
+        python_callable=produce_web_logs,
+        execution_timeout=timedelta(minutes=2)
     )
